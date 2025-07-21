@@ -97,7 +97,9 @@ def split_dataset(source_dir, output_dir, val_ratio=0.2, random_seed=42):
     ]
     
     for directory in dirs_to_create:
-        create_directories(output_dir, [directory])
+        full_path = os.path.join(output_dir, directory)
+        os.makedirs(full_path, exist_ok=True)
+        print(f"Created directory: {full_path}")
     
     # Get image-label pairs
     print("Finding image-label pairs...")
@@ -161,8 +163,8 @@ def main():
     """Main function to run the dataset splitting."""
     # Configuration
     current_dir = os.getcwd()
-    source_dir = current_dir  # Current directory contains the train folder
-    output_dir = os.path.join(current_dir, 'split_dataset')  # Output to split_dataset folder
+    source_dir = r"D:\coding\count-car-project\data\raw\20250720"  # Current directory contains the train folder
+    output_dir = r"D:\coding\count-car-project\data\train_data\250720"
     val_ratio = 0.2  # 20% for validation
     random_seed = 42  # For reproducible results
     
@@ -184,7 +186,7 @@ def main():
     split_dataset(source_dir, output_dir, val_ratio, random_seed)
     
     print("\nNote: The original train folder remains unchanged.")
-    print("The split dataset is available in the 'split_dataset' folder.")
+    print(f"The split dataset is available in: {output_dir}")
 
 if __name__ == "__main__":
     main()
