@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-Script to split YOLO dataset into train and validation sets.
-This script takes the existing train dataset and splits it into separate
-train and validation folders while maintaining the image-label pairs.
-"""
-
 import os
 import shutil
 import random
@@ -12,11 +5,11 @@ from pathlib import Path
 
 def create_directories(base_path, folders):
     """
-    Create necessary directories for the split dataset.
+    Tạo các thư mục cần thiết cho dataset đã chia.
     
     Args:
-        base_path (str): Base path where directories will be created
-        folders (list): List of folder names to create
+        base_path (str): Đường dẫn gốc nơi tạo thư mục
+        folders (list): Danh sách tên thư mục cần tạo
     """
     for folder in folders:
         folder_path = os.path.join(base_path, folder)
@@ -25,31 +18,31 @@ def create_directories(base_path, folders):
 
 def get_image_label_pairs(images_dir, labels_dir):
     """
-    Get matching image-label pairs from the directories.
+    Lấy các cặp ảnh-nhãn khớp nhau từ thư mục.
     
     Args:
-        images_dir (str): Path to images directory
-        labels_dir (str): Path to labels directory
+        images_dir (str): Đường dẫn thư mục ảnh
+        labels_dir (str): Đường dẫn thư mục nhãn
     
     Returns:
-        list: List of tuples (image_path, label_path) for matching pairs
+        list: Danh sách các tuple (image_path, label_path) cho các cặp khớp
     """
     image_files = {}
     label_files = {}
     
-    # Get all image files
+    # Lấy tất cả file ảnh với các định dạng phổ biến
     for ext in ['*.jpg', '*.jpeg', '*.png', '*.bmp']:
         for img_path in Path(images_dir).glob(ext):
-            # Use stem (filename without extension) as key
+            # Sử dụng stem (tên file không có phần mở rộng) làm key
             base_name = img_path.stem
             image_files[base_name] = str(img_path)
     
-    # Get all label files
+    # Lấy tất cả file nhãn
     for label_path in Path(labels_dir).glob('*.txt'):
         base_name = label_path.stem
         label_files[base_name] = str(label_path)
     
-    # Find matching pairs
+    # Tìm các cặp khớp nhau
     pairs = []
     for base_name in image_files:
         if base_name in label_files:
@@ -57,7 +50,7 @@ def get_image_label_pairs(images_dir, labels_dir):
         else:
             print(f"Warning: No label file found for image: {base_name}")
     
-    # Check for labels without images
+    # Kiểm tra nhãn không có ảnh tương ứng
     for base_name in label_files:
         if base_name not in image_files:
             print(f"Warning: No image file found for label: {base_name}")
@@ -66,22 +59,22 @@ def get_image_label_pairs(images_dir, labels_dir):
 
 def split_dataset(source_dir, output_dir, val_ratio=0.2, random_seed=42):
     """
-    Split dataset into train and validation sets.
+    Chia dataset thành tập train và validation.
     
     Args:
-        source_dir (str): Path to source directory containing train folder
-        output_dir (str): Path to output directory for split dataset
-        val_ratio (float): Ratio of validation data (0.0 to 1.0)
-        random_seed (int): Random seed for reproducible splits
+        source_dir (str): Đường dẫn đến thư mục nguồn chứa thư mục train
+        output_dir (str): Đường dẫn đến thư mục đầu ra cho dataset đã chia
+        val_ratio (float): Tỷ lệ dữ liệu validation (0.0 đến 1.0)
+        random_seed (int): Hạt giống ngẫu nhiên cho phép chia có thể tái tạo
     """
-    # Set random seed for reproducibility
+    # Đặt hạt giống ngẫu nhiên cho khả năng tái tạo
     random.seed(random_seed)
     
-    # Define paths
+    # Định nghĩa các đường dẫn
     train_images_dir = os.path.join(source_dir, 'train', 'images')
     train_labels_dir = os.path.join(source_dir, 'train', 'labels')
     
-    # Check if source directories exist
+    # Kiểm tra xem các thư mục nguồn có tồn tại không
     if not os.path.exists(train_images_dir):
         print(f"Error: Source images directory not found: {train_images_dir}")
         return
@@ -90,7 +83,7 @@ def split_dataset(source_dir, output_dir, val_ratio=0.2, random_seed=42):
         print(f"Error: Source labels directory not found: {train_labels_dir}")
         return
     
-    # Create output directories
+    # Tạo các thư mục đầu ra
     dirs_to_create = [
         'train/images', 'train/labels',
         'val/images', 'val/labels'
@@ -101,7 +94,7 @@ def split_dataset(source_dir, output_dir, val_ratio=0.2, random_seed=42):
         os.makedirs(full_path, exist_ok=True)
         print(f"Created directory: {full_path}")
     
-    # Get image-label pairs
+    # Lấy các cặp ảnh-nhãn
     print("Finding image-label pairs...")
     pairs = get_image_label_pairs(train_images_dir, train_labels_dir)
     
@@ -111,10 +104,10 @@ def split_dataset(source_dir, output_dir, val_ratio=0.2, random_seed=42):
     
     print(f"Found {len(pairs)} image-label pairs")
     
-    # Shuffle pairs
+    # Xáo trộn các cặp
     random.shuffle(pairs)
     
-    # Calculate split sizes
+    # Tính toán kích thước chia tách
     total_pairs = len(pairs)
     val_size = int(total_pairs * val_ratio)
     train_size = total_pairs - val_size
@@ -123,18 +116,18 @@ def split_dataset(source_dir, output_dir, val_ratio=0.2, random_seed=42):
     print(f"  Training: {train_size} pairs ({(1-val_ratio)*100:.1f}%)")
     print(f"  Validation: {val_size} pairs ({val_ratio*100:.1f}%)")
     
-    # Split the data
+    # Chia dữ liệu
     train_pairs = pairs[:train_size]
     val_pairs = pairs[train_size:]
     
-    # Copy files to respective directories
+    # Sao chép file vào các thư mục tương ứng
     print("\nCopying training files...")
     for i, (img_path, label_path) in enumerate(train_pairs):
-        # Copy image
+        # Sao chép ảnh
         dst_img = os.path.join(output_dir, 'train', 'images', os.path.basename(img_path))
         shutil.copy2(img_path, dst_img)
         
-        # Copy label
+        # Sao chép nhãn
         dst_label = os.path.join(output_dir, 'train', 'labels', os.path.basename(label_path))
         shutil.copy2(label_path, dst_label)
         
@@ -143,11 +136,11 @@ def split_dataset(source_dir, output_dir, val_ratio=0.2, random_seed=42):
     
     print("\nCopying validation files...")
     for i, (img_path, label_path) in enumerate(val_pairs):
-        # Copy image
+        # Sao chép ảnh
         dst_img = os.path.join(output_dir, 'val', 'images', os.path.basename(img_path))
         shutil.copy2(img_path, dst_img)
         
-        # Copy label
+        # Sao chép nhãn
         dst_label = os.path.join(output_dir, 'val', 'labels', os.path.basename(label_path))
         shutil.copy2(label_path, dst_label)
         
@@ -160,8 +153,6 @@ def split_dataset(source_dir, output_dir, val_ratio=0.2, random_seed=42):
     print(f"Validation set: {len(val_pairs)} pairs")
 
 def main():
-    """Main function to run the dataset splitting."""
-    # Configuration
     current_dir = os.getcwd()
     source_dir = r"D:\coding\count-car-project\data\raw\20250720"  # Current directory contains the train folder
     output_dir = r"D:\coding\count-car-project\data\train_data\250720"
