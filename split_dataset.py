@@ -154,8 +154,8 @@ def split_dataset(source_dir, output_dir, val_ratio=0.2, random_seed=42):
 
 def main():
     current_dir = os.getcwd()
-    source_dir = r"D:\coding\count-car-project\data\raw\20250720"  # Current directory contains the train folder
-    output_dir = r"D:\coding\count-car-project\data\train_data\250720"
+    source_dir = r"D:\coding\count-car-project\data\raw\20250723"  # Current directory contains the train folder
+    output_dir = r"D:\coding\count-car-project\data\train_data\250723"
     val_ratio = 0.2  # 20% for validation
     random_seed = 42  # For reproducible results
     

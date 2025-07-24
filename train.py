@@ -7,15 +7,15 @@ if __name__ == '__main__':
     print(f"Using device: {device}")
 
     # Load a pretrained model
-    model = YOLO("yolo11n.pt")
+    model = YOLO("yolo11s.pt")
 
     # Train the model with CUDA
     results = model.train(
         data="data.yaml",  # Path to your data configuration file
-        epochs=100, 
-        imgsz=960,
+        epochs=80, 
+        imgsz=(1280, 960),
         device=device,
-        batch=16,
+        batch=4,
         workers=0,  # Set to 0 on Windows to avoid multiprocessing issues
         cache=True,
         amp=True,  # Mixed precision for faster training
@@ -23,4 +23,3 @@ if __name__ == '__main__':
     )
 
     print(f"Training completed")
-    print(f"Results: {results}")

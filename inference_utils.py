@@ -38,8 +38,8 @@ def draw_obb_and_count(image, results, class_names, colors):
                 # Vẽ khung chữ nhật bao quanh đối tượng được phát hiện
                 cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
                 
-                # Tạo nhãn với tên lớp và độ tin cậy
-                label = f"{class_name}: {confidence:.2f}"
+                # Tạo nhãn với tên lớp và độ tin cậy (chuyển sang phần trăm)
+                label = f"{class_name}: {confidence*100:.0f}%"
                 
                 # Tính kích thước văn bản cho nền nhãn
                 label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
@@ -68,8 +68,8 @@ def draw_obb_and_count(image, results, class_names, colors):
                 confidence = float(obb.conf[0])
                 class_name = class_names[cls_id]
                 
-                # Tạo nhãn cho OBB
-                label = f"OBB {class_name}: {confidence:.2f}"
+                # Tạo nhãn cho OBB (chuyển sang phần trăm)
+                label = f"OBB {class_name}: {confidence*100:.0f}%"
                 
                 # Vẽ nhãn OBB tại điểm góc đầu tiên
                 cv2.putText(image, label, (points[0][0], points[0][1] - 10), 
@@ -104,7 +104,7 @@ def predict_image(model, source_path, save_dir_base="predict", conf=0.5):
     """Dự đoán và hiển thị OBB và số lượng cho ảnh"""
     
     # Tạo thư mục có timestamp duy nhất cho phiên dự đoán này
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     save_dir = os.path.join(save_dir_base, timestamp)
     os.makedirs(save_dir, exist_ok=True)
 
