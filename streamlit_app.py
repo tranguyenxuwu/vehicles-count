@@ -8,6 +8,7 @@ import os  # Thao tác với hệ điều hành
 from pathlib import Path  # Xử lý đường dẫn file
 import base64  # Mã hóa base64
 import glob  # Tìm kiếm file theo pattern
+import shutil  # Sao chép file
 
 # Hàm đọc model mới nhất từ latest.txt
 def get_latest_model():
@@ -40,11 +41,13 @@ def get_latest_model():
         return None
 
 # Tạo tiêu đề cho ứng dụng web
-st.title("YOLOv11 Trafic Detection App")
+st.title("YOLOv11 Traffic Detection App")
 
-# Khởi tạo session state để lưu đường dẫn video output
+# Khởi tạo session state để lưu đường dẫn output
 if 'output_video_path' not in st.session_state:
     st.session_state.output_video_path = None
+if 'output_image_path' not in st.session_state:
+    st.session_state.output_image_path = None
 
 # Tùy chọn model
 st.subheader("Model Selection")
@@ -130,18 +133,52 @@ if st.button("Run Predict"):
                 # Gọi hàm predict_image
                 img, counts, out_path = predict_image(model, input_path, conf=conf)
                 
-                # Bước 4: Hiển thị kết quả
+                # Bước 4: Lưu ảnh vào thư mục outputs
+                status_text.text("💾 Saving image result...")
+                progress_bar.progress(80)
+                
+                # Tạo thư mục outputs nếu chưa có
+                outputs_dir = Path("outputs")
+                outputs_dir.mkdir(exist_ok=True)
+                
+                # Sao chép file kết quả vào thư mục outputs với tên duy nhất
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                saved_image_name = f"image_result_{timestamp}.jpg"
+                saved_image_path = outputs_dir / saved_image_name
+                
+                # Sao chép file và đảm bảo nó được lưu
+                shutil.copy2(out_path, saved_image_path)
+                
+                # Lưu đường dẫn vào session state
+                st.session_state.output_image_path = str(saved_image_path)
+                
+                # Bước 5: Hiển thị kết quả
                 status_text.text("✅ Displaying results...")
                 progress_bar.progress(90)
                 
                 # Hiển thị ảnh kết quả và số lượng đối tượng
-                st.image(out_path, caption="Object Detection Result")
+                st.image(str(saved_image_path), caption="Object Detection Result")
+                
+                # Hiển thị thông tin lưu file
+                st.success(f"✅ Image saved successfully: {saved_image_path}")
+                
+                # Hiển thị số lượng đối tượng
+                if counts:
+                    st.subheader("Detection Summary:")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        total_objects = sum(counts.values())
+                        st.metric("Total Objects", total_objects)
+                    with col2:
+                        for class_name, count in counts.items():
+                            st.metric(f"{class_name}", count)
 
-                # Xóa file output tạm thời
+                # Xóa file output tạm thời (chỉ xóa file tạm trong predict/)
                 if os.path.exists(out_path):
                     os.remove(out_path)
                 
-                # Bước 5: Hoàn thành
+                # Bước 6: Hoàn thành
                 progress_bar.progress(100)
                 status_text.text("🎉 Image processing completed!")
 
@@ -168,8 +205,8 @@ if st.button("Run Predict"):
                 def update_video_progress(progress, current_frame, total):
                     video_progress.progress(progress)
                     frame_info.text(f"Processing frame {current_frame}/{total} ({progress*100:.1f}%)")
-                    # Cập nhật thanh tiến trình chính (từ 60% đến 85%)
-                    main_progress = 60 + (progress * 25)
+                    # Cập nhật thanh tiến trình chính (từ 60% đến 80%)
+                    main_progress = 60 + (progress * 20)
                     progress_bar.progress(int(main_progress))
                 
                 # Bước 4: Dự đoán video với cập nhật tiến trình
@@ -178,17 +215,37 @@ if st.button("Run Predict"):
                 # Gọi hàm predict_video với callback
                 out_path = predict_video(model, input_path, conf=conf, progress_callback=update_video_progress)
                 
-                # Bước 5: Tải video để hiển thị
+                # Bước 5: Lưu video vào thư mục outputs
+                status_text.text("💾 Saving video result...")
+                progress_bar.progress(85)
+                
+                # Tạo thư mục outputs nếu chưa có
+                outputs_dir = Path("outputs")
+                outputs_dir.mkdir(exist_ok=True)
+                
+                # Sao chép file kết quả vào thư mục outputs với tên duy nhất
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                saved_video_name = f"video_result_{timestamp}.mp4"
+                saved_video_path = outputs_dir / saved_video_name
+                
+                # Sao chép file và đảm bảo nó được lưu
+                shutil.copy2(out_path, saved_video_path)
+                
+                # Bước 6: Tải video để hiển thị
                 status_text.text("📺 Loading processed video...")
                 progress_bar.progress(90)
                 
                 # Lưu đường dẫn video vào session state và hiển thị
-                st.session_state.output_video_path = out_path
-                with open(out_path, 'rb') as video_file:
+                st.session_state.output_video_path = str(saved_video_path)
+                with open(saved_video_path, 'rb') as video_file:
                     video_bytes = video_file.read()
                 st.video(video_bytes)
                 
-                # Bước 6: Hoàn thành
+                # Hiển thị thông tin lưu file
+                st.success(f"✅ Video saved successfully: {saved_video_path}")
+                
+                # Bước 7: Hoàn thành
                 progress_bar.progress(100)
                 status_text.text("🎉 Video processing completed!")
 
@@ -208,3 +265,36 @@ if st.button("Run Predict"):
             st.warning("Please upload a model or ensure models exist in models/ directory.")
         if uploaded_file is None:
             st.warning("Please upload an image or video file.")
+
+# Phần download kết quả (hiển thị sau khi đã có kết quả)
+st.divider()
+st.subheader("Download Results")
+
+# Download ảnh kết quả
+if st.session_state.output_image_path and os.path.exists(st.session_state.output_image_path):
+    with open(st.session_state.output_image_path, "rb") as file:
+        st.download_button(
+            label="📥 Download Image Result",
+            data=file.read(),
+            file_name=Path(st.session_state.output_image_path).name,
+            mime="image/jpeg"
+        )
+
+# Download video kết quả
+if st.session_state.output_video_path and os.path.exists(st.session_state.output_video_path):
+    with open(st.session_state.output_video_path, "rb") as file:
+        st.download_button(
+            label="📥 Download Video Result",
+            data=file.read(),
+            file_name=Path(st.session_state.output_video_path).name,
+            mime="video/mp4"
+        )
+
+# Hiển thị danh sách file đã lưu
+if os.path.exists("outputs"):
+    files = list(Path("outputs").glob("*"))
+    if files:
+        st.subheader("📁 Saved Results")
+        for file_path in sorted(files, reverse=True)[:10]:  # Hiển thị 10 file gần nhất
+            file_size = file_path.stat().st_size / (1024*1024)  # MB
+            st.text(f"📄 {file_path.name} ({file_size:.1f} MB)")
