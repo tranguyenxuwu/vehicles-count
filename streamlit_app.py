@@ -9,6 +9,7 @@ from pathlib import Path  # Xử lý đường dẫn file
 import base64  # Mã hóa base64
 import glob  # Tìm kiếm file theo pattern
 import shutil  # Sao chép file
+import time  # Đo thời gian xử lý
 
 # Hàm đọc model mới nhất từ latest.txt
 def get_latest_model():
@@ -85,6 +86,9 @@ if st.button("Run Predict"):
     has_model = (uploaded_model is not None) or (latest_model_path is not None)
     
     if has_model and uploaded_file is not None:
+        # Bắt đầu đo thời gian
+        start_time = time.time()
+        
         # Tạo thanh tiến trình và text trạng thái
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -157,21 +161,34 @@ if st.button("Run Predict"):
                 status_text.text("✅ Displaying results...")
                 progress_bar.progress(90)
                 
+                # Tính tổng thời gian xử lý
+                end_time = time.time()
+                total_time = end_time - start_time
+                
                 # Hiển thị ảnh kết quả và số lượng đối tượng
                 st.image(str(saved_image_path), caption="Object Detection Result")
                 
                 # Hiển thị thông tin lưu file
                 st.success(f"✅ Image saved successfully: {saved_image_path}")
                 
-                # Hiển thị số lượng đối tượng
+                # Hiển thị số lượng đối tượng và thời gian xử lý
                 if counts:
                     st.subheader("Detection Summary:")
-                    col1, col2 = st.columns(2)
+                    col1, col2, col3 = st.columns(3)
                     with col1:
                         total_objects = sum(counts.values())
                         st.metric("Total Objects", total_objects)
                     with col2:
-                        for class_name, count in counts.items():
+                        st.metric("Processing Time", f"{total_time:.2f}s")
+                    with col3:
+                        device_info = "GPU" if torch.cuda.is_available() else "CPU"
+                        st.metric("Device Used", device_info)
+                    
+                    # Hiển thị chi tiết từng loại đối tượng
+                    st.subheader("Object Details:")
+                    detail_cols = st.columns(len(counts))
+                    for idx, (class_name, count) in enumerate(counts.items()):
+                        with detail_cols[idx]:
                             st.metric(f"{class_name}", count)
 
                 # Xóa file output tạm thời (chỉ xóa file tạm trong predict/)
@@ -180,7 +197,7 @@ if st.button("Run Predict"):
                 
                 # Bước 6: Hoàn thành
                 progress_bar.progress(100)
-                status_text.text("🎉 Image processing completed!")
+                status_text.text(f"🎉 Image processing completed in {total_time:.2f}s!")
 
             # Xử lý video
             elif input_path.lower().endswith((".mp4", ".avi", ".mov")):
@@ -192,6 +209,8 @@ if st.button("Run Predict"):
                 import cv2
                 cap = cv2.VideoCapture(input_path)
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                fps = int(cap.get(cv2.CAP_PROP_FPS))
+                duration = total_frames / fps if fps > 0 else 0
                 cap.release()
                 
                 # Tạo thanh tiến trình con cho xử lý video
@@ -236,6 +255,10 @@ if st.button("Run Predict"):
                 status_text.text("📺 Loading processed video...")
                 progress_bar.progress(90)
                 
+                # Tính tổng thời gian xử lý
+                end_time = time.time()
+                total_time = end_time - start_time
+                
                 # Lưu đường dẫn video vào session state và hiển thị
                 st.session_state.output_video_path = str(saved_video_path)
                 with open(saved_video_path, 'rb') as video_file:
@@ -245,9 +268,26 @@ if st.button("Run Predict"):
                 # Hiển thị thông tin lưu file
                 st.success(f"✅ Video saved successfully: {saved_video_path}")
                 
+                # Hiển thị thông tin video
+                st.subheader("Video Processing Summary:")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Frames", total_frames)
+                with col2:
+                    st.metric("Processing Time", f"{total_time:.2f}s")
+                with col3:
+                    st.metric("Video Duration", f"{duration:.1f}s")
+                with col4:
+                    processing_speed = total_frames / total_time if total_time > 0 else 0
+                    st.metric("Speed", f"{processing_speed:.1f} FPS")
+                
+                # Hiển thị thông tin thiết bị
+                device_info = "GPU" if torch.cuda.is_available() else "CPU"
+                st.info(f"🖥️ Processed on: {device_info}")
+                
                 # Bước 7: Hoàn thành
                 progress_bar.progress(100)
-                status_text.text("🎉 Video processing completed!")
+                status_text.text(f"🎉 Video processing completed in {total_time:.2f}s!")
 
         except Exception as e:
             # Xử lý lỗi
