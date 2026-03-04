@@ -6,39 +6,28 @@ import torch  # PyTorch cho deep learning
 import tempfile  # Tạo file tạm thời
 import os  # Thao tác với hệ điều hành
 from pathlib import Path  # Xử lý đường dẫn file
-import base64  # Mã hóa base64
-import glob  # Tìm kiếm file theo pattern
-import shutil  # Sao chép file
 import time  # Đo thời gian xử lý
 
-# Hàm đọc model mới nhất từ latest.txt
-def get_latest_model():
-    """Đọc đường dẫn model mới nhất từ file models/latest.txt"""
+# Hàm lấy danh sách model có sẵn
+def get_available_models():
+    """Quét thư mục models/ và trả về danh sách tên model (thư mục chứa best.pt)"""
+    models_dir = Path("models")
+    if not models_dir.exists():
+        return []
+    return sorted(
+        [d.name for d in models_dir.iterdir() if d.is_dir() and (d / "best.pt").exists()]
+    )
+
+# Hàm đọc model mặc định từ latest.txt
+def get_default_model():
+    """Đọc tên model mặc định từ file models/latest.txt"""
     latest_file = Path("models/latest.txt")
     if not latest_file.exists():
         return None
-    
     try:
         with open(latest_file, 'r', encoding='utf-8') as f:
-            model_info = f.read().strip()
-        
-        # Kiểm tra xem có phải là đường dẫn đầy đủ hay chỉ là tên thư mục
-        if model_info:
-            # Nếu là tên thư mục (như "20250724"), tạo đường dẫn đầy đủ
-            if not model_info.endswith('.pt'):
-                model_path = f"models/{model_info}/best.pt"
-            else:
-                # Nếu đã là đường dẫn đầy đủ
-                model_path = model_info
-            
-            # Kiểm tra xem file model có tồn tại không
-            if Path(model_path).exists():
-                return model_path
-            else:
-                return None
-        else:
-            return None
-    except Exception as e:
+            return f.read().strip() or None
+    except Exception:
         return None
 
 # Tạo tiêu đề cho ứng dụng web
@@ -52,38 +41,56 @@ if 'output_image_path' not in st.session_state:
 
 # Tùy chọn model
 st.subheader("Model Selection")
-model_option = st.radio(
-    "Choose model source:",
-    ("Upload model", "Use latest model from models/latest.txt")
-)
+available_models = get_available_models()
+default_model_name = get_default_model()
 
-uploaded_model = None
 latest_model_path = None
 
-if model_option == "Upload model":
-    # Tạo widget upload file cho model YOLO (.pt file)
-    uploaded_model = st.file_uploader("Upload YOLOv11 model (.pt)", type=["pt"])
+if not available_models:
+    st.error("❌ No models found in models/ directory (each model folder must contain best.pt)")
 else:
-    # Đọc model mới nhất từ latest.txt
-    latest_model_path = get_latest_model()
-    if latest_model_path:
-        st.success(f"✅ Latest model found: {latest_model_path}")
-        # Hiển thị thông tin model từ đường dẫn
-        model_name = Path(latest_model_path).parent.name
-        st.info(f"📅 Model: {model_name}")
-    else:
-        st.error("❌ No valid model found in models/latest.txt")
+    # Xác định index mặc định
+    default_index = 0
+    if default_model_name and default_model_name in available_models:
+        default_index = available_models.index(default_model_name)
+
+    selected_model = st.selectbox("Select a model:", available_models, index=default_index)
+    latest_model_path = f"models/{selected_model}/best.pt"
+    st.success(f"✅ Using model: {latest_model_path}")
 
 # Tạo widget upload file cho ảnh hoặc video
 uploaded_file = st.file_uploader("Upload Image or Video", type=["jpg", "jpeg", "png", "mp4", "avi", "mov"])
 
 # Tạo slider để điều chỉnh ngưỡng confidence (độ tin cậy)
 conf = st.slider("Confidence threshold", min_value=0.0, max_value=1.0, value=0.5, step=0.1)
+iou = st.slider("IoU threshold (NMS)", min_value=0.0, max_value=1.0, value=0.45, step=0.05, 
+                help="Intersection over Union threshold. Lower values remove more overlapping boxes for the same object.")
+
+# --- SAHI Tiled Inference Settings ---
+with st.sidebar:
+    st.header("⚙️ SAHI Tiled Inference")
+    use_sahi = st.checkbox("Enable SAHI", value=True,
+                           help="Slices the image into tiles for better small-object detection.")
+    if use_sahi:
+        slice_height = st.slider("Slice Height (px)", min_value=128, max_value=1024, value=512, step=64)
+        slice_width = st.slider("Slice Width (px)", min_value=128, max_value=1024, value=512, step=64)
+        overlap_ratio = st.slider("Overlap Ratio", min_value=0.0, max_value=0.5, value=0.2, step=0.05,
+                                  help="Fraction of overlap between adjacent tiles.")
+    else:
+        slice_height = 512
+        slice_width = 512
+        overlap_ratio = 0.2
+
+    st.divider()
+    st.header("🏷️ Display Options")
+    show_label = st.checkbox("Show labels on detections", value=False,
+                             help="Show class name and confidence percentage on each bounding box. "
+                                  "Disabled by default to avoid covering small objects.")
 
 # Nút chạy dự đoán
 if st.button("Run Predict"):
     # Kiểm tra xem có model và file input không
-    has_model = (uploaded_model is not None) or (latest_model_path is not None)
+    has_model = latest_model_path is not None
     
     if has_model and uploaded_file is not None:
         # Bắt đầu đo thời gian
@@ -102,15 +109,8 @@ if st.button("Run Predict"):
             status_text.text("📁 Preparing files...")
             progress_bar.progress(10)
             
-            # Xử lý model path
-            if uploaded_model is not None:
-                # Tạo file tạm thời cho model được upload
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pt") as tmp_model:
-                    tmp_model.write(uploaded_model.read())
-                    model_path = tmp_model.name
-            else:
-                # Sử dụng model mới nhất
-                model_path = latest_model_path
+            # Sử dụng model đã chọn
+            model_path = latest_model_path
 
             # Tạo file tạm thời cho input (ảnh/video)
             with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded_file.name).suffix) as tmp_input:
@@ -121,8 +121,13 @@ if st.button("Run Predict"):
             status_text.text("🤖 Loading YOLO model...")
             progress_bar.progress(30)
             
-            # Kiểm tra device (GPU hoặc CPU)
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            # Kiểm tra device (GPU, MPS hoặc CPU)
+            if torch.cuda.is_available():
+                device = 'cuda'
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                device = 'mps'
+            else:
+                device = 'cpu'
             model = YOLO(model_path)
             model.to(device)
 
@@ -135,27 +140,20 @@ if st.button("Run Predict"):
                 progress_bar.progress(60)
                 
                 # Gọi hàm predict_image
-                img, counts, out_path = predict_image(model, input_path, conf=conf)
+                img, counts, out_path = predict_image(
+                    model, input_path, conf=conf, iou_threshold=iou,
+                    use_sahi=use_sahi,
+                    slice_height=slice_height, slice_width=slice_width,
+                    overlap_height_ratio=overlap_ratio, overlap_width_ratio=overlap_ratio,
+                    show_label=show_label,
+                )
                 
-                # Bước 4: Lưu ảnh vào thư mục outputs
-                status_text.text("💾 Saving image result...")
+                # Bước 4: Kết quả đã được lưu trực tiếp vào outputs/images/
+                status_text.text("💾 Result saved...")
                 progress_bar.progress(80)
                 
-                # Tạo thư mục outputs nếu chưa có
-                outputs_dir = Path("outputs")
-                outputs_dir.mkdir(exist_ok=True)
-                
-                # Sao chép file kết quả vào thư mục outputs với tên duy nhất
-                from datetime import datetime
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                saved_image_name = f"image_result_{timestamp}.jpg"
-                saved_image_path = outputs_dir / saved_image_name
-                
-                # Sao chép file và đảm bảo nó được lưu
-                shutil.copy2(out_path, saved_image_path)
-                
                 # Lưu đường dẫn vào session state
-                st.session_state.output_image_path = str(saved_image_path)
+                st.session_state.output_image_path = out_path
                 
                 # Bước 5: Hiển thị kết quả
                 status_text.text("✅ Displaying results...")
@@ -166,10 +164,10 @@ if st.button("Run Predict"):
                 total_time = end_time - start_time
                 
                 # Hiển thị ảnh kết quả và số lượng đối tượng
-                st.image(str(saved_image_path), caption="Object Detection Result")
+                st.image(out_path, caption="Object Detection Result")
                 
                 # Hiển thị thông tin lưu file
-                st.success(f"✅ Image saved successfully: {saved_image_path}")
+                st.success(f"✅ Image saved: {out_path}")
                 
                 # Hiển thị số lượng đối tượng và thời gian xử lý
                 if counts:
@@ -181,7 +179,12 @@ if st.button("Run Predict"):
                     with col2:
                         st.metric("Processing Time", f"{total_time:.2f}s")
                     with col3:
-                        device_info = "GPU" if torch.cuda.is_available() else "CPU"
+                        if device == 'cuda':
+                            device_info = "GPU (CUDA)"
+                        elif device == 'mps':
+                            device_info = "Apple MPS"
+                        else:
+                            device_info = "CPU"
                         st.metric("Device Used", device_info)
                     
                     # Hiển thị chi tiết từng loại đối tượng
@@ -190,10 +193,6 @@ if st.button("Run Predict"):
                     for idx, (class_name, count) in enumerate(counts.items()):
                         with detail_cols[idx]:
                             st.metric(f"{class_name}", count)
-
-                # Xóa file output tạm thời (chỉ xóa file tạm trong predict/)
-                if os.path.exists(out_path):
-                    os.remove(out_path)
                 
                 # Bước 6: Hoàn thành
                 progress_bar.progress(100)
@@ -232,24 +231,18 @@ if st.button("Run Predict"):
                 status_text.text(f"🎥 Processing video ({total_frames} frames)...")
 
                 # Gọi hàm predict_video với callback
-                out_path = predict_video(model, input_path, conf=conf, progress_callback=update_video_progress)
+                out_path = predict_video(
+                    model, input_path, conf=conf, iou_threshold=iou,
+                    progress_callback=update_video_progress,
+                    use_sahi=use_sahi,
+                    slice_height=slice_height, slice_width=slice_width,
+                    overlap_height_ratio=overlap_ratio, overlap_width_ratio=overlap_ratio,
+                    show_label=show_label,
+                )
                 
-                # Bước 5: Lưu video vào thư mục outputs
-                status_text.text("💾 Saving video result...")
+                # Bước 5: Kết quả đã được lưu trực tiếp vào outputs/videos/
+                status_text.text("💾 Result saved...")
                 progress_bar.progress(85)
-                
-                # Tạo thư mục outputs nếu chưa có
-                outputs_dir = Path("outputs")
-                outputs_dir.mkdir(exist_ok=True)
-                
-                # Sao chép file kết quả vào thư mục outputs với tên duy nhất
-                from datetime import datetime
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                saved_video_name = f"video_result_{timestamp}.mp4"
-                saved_video_path = outputs_dir / saved_video_name
-                
-                # Sao chép file và đảm bảo nó được lưu
-                shutil.copy2(out_path, saved_video_path)
                 
                 # Bước 6: Tải video để hiển thị
                 status_text.text("📺 Loading processed video...")
@@ -260,13 +253,13 @@ if st.button("Run Predict"):
                 total_time = end_time - start_time
                 
                 # Lưu đường dẫn video vào session state và hiển thị
-                st.session_state.output_video_path = str(saved_video_path)
-                with open(saved_video_path, 'rb') as video_file:
+                st.session_state.output_video_path = out_path
+                with open(out_path, 'rb') as video_file:
                     video_bytes = video_file.read()
                 st.video(video_bytes)
                 
                 # Hiển thị thông tin lưu file
-                st.success(f"✅ Video saved successfully: {saved_video_path}")
+                st.success(f"✅ Video saved: {out_path}")
                 
                 # Hiển thị thông tin video
                 st.subheader("Video Processing Summary:")
@@ -282,7 +275,12 @@ if st.button("Run Predict"):
                     st.metric("Speed", f"{processing_speed:.1f} FPS")
                 
                 # Hiển thị thông tin thiết bị
-                device_info = "GPU" if torch.cuda.is_available() else "CPU"
+                if device == 'cuda':
+                    device_info = "GPU (CUDA)"
+                elif device == 'mps':
+                    device_info = "Apple MPS"
+                else:
+                    device_info = "CPU"
                 st.info(f"🖥️ Processed on: {device_info}")
                 
                 # Bước 7: Hoàn thành
@@ -295,14 +293,13 @@ if st.button("Run Predict"):
             st.error(f"An error occurred: {str(e)}")
         finally:
             # Dọn dẹp các file tạm thời (chỉ xóa nếu là file upload)
-            if uploaded_model is not None and model_path and os.path.exists(model_path):
-                os.remove(model_path)
+
             if input_path and os.path.exists(input_path):
                 os.remove(input_path)
     else:
         # Cảnh báo nếu chưa có model hoặc file input
         if not has_model:
-            st.warning("Please upload a model or ensure models exist in models/ directory.")
+            st.warning("Please select a model from the list above.")
         if uploaded_file is None:
             st.warning("Please upload an image or video file.")
 
@@ -330,11 +327,17 @@ if st.session_state.output_video_path and os.path.exists(st.session_state.output
             mime="video/mp4"
         )
 
-# Hiển thị danh sách file đã lưu
-if os.path.exists("outputs"):
-    files = list(Path("outputs").glob("*"))
-    if files:
+# Hiển thị danh sách file đã lưu (images + videos)
+outputs_root = Path("outputs")
+if outputs_root.exists():
+    all_files = sorted(
+        list((outputs_root / "images").glob("*")) + list((outputs_root / "videos").glob("*")),
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
+    if all_files:
         st.subheader("📁 Saved Results")
-        for file_path in sorted(files, reverse=True)[:10]:  # Hiển thị 10 file gần nhất
+        for file_path in all_files[:10]:  # Hiển thị 10 file gần nhất
             file_size = file_path.stat().st_size / (1024*1024)  # MB
-            st.text(f"📄 {file_path.name} ({file_size:.1f} MB)")
+            category = file_path.parent.name  # 'images' or 'videos'
+            st.text(f"📄 [{category}] {file_path.name} ({file_size:.1f} MB)")
