@@ -1,2 +1,5 @@
 outputs
 __pycache__
+test/UAVDT-preview/
+test/results/
+.DS_Store
