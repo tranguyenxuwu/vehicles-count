@@ -1,5 +1,11 @@
 outputs
 __pycache__
 test/UAVDT-preview/
+test/Visdrone_test/
 *.json
 .DS_Store
+.docx
+REPORT.md
+report-rules.md
+*.png
+*.jpg

@@ -17,12 +17,14 @@ The recommended environment for executing scripts is a conda environment named `
 ## Key Sub-Projects & Workflows
 
 ### Model Evaluation on UAVDT-Preview (`test/evaluate_models.py`)
-A comprehensive evaluation script was developed to run YOLO inference against a set of images and compare them against bounding boxes defined in Supervisely JSON format.
+A comprehensive evaluation script was developed to run YOLO inference against a set of images and compare them against bounding boxes defined in Supervisely JSON format. Supports SAHI tiled inference for improved small-object detection.
 
 **Command to run:**
 ```bash
-conda run -n cvenv python test/evaluate_models.py --conf 0.25 --iou 0.5 --imgsz 960
+conda run -n cvenv python test/evaluate_models.py --conf 0.5 --iou 0.5
 ```
+
+Each model runs at its native resolution (yolo26m: 960, yolo26m-p2: 768) with SAHI slicing (512×512, 20% overlap).
 
 **Recent Key Findings:**
 - Models were trained on VisDrone (10 classes) but evaluated on UAVDT-preview (4 classes).

@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
-YOLO Model Evaluation on UAVDT-Preview Dataset
-================================================
+YOLO Model Evaluation on UAVDT-Preview Dataset (SAHI)
+=====================================================
 Evaluates all YOLO models in test/model/ against UAVDT-preview images
 (train + test splits combined), using existing Supervisely JSON labels
 as ground truth.
+
+Uses SAHI (Slicing Aided Hyper Inference) for improved small-object
+detection.  Each model runs at its native resolution:
+  • yolo26m    → 960 px
+  • yolo26m-p2 → 768 px
 
 Metrics computed:
   - Per-class AP@50, AP@50:95, Precision, Recall
@@ -15,7 +20,7 @@ Metrics computed:
 
 Usage:
     conda activate cvenv
-    python evaluate_models.py [--conf 0.25] [--iou 0.5] [--imgsz 960]
+    python evaluate_models.py [--conf 0.5] [--iou 0.5]
 """
 
 import argparse
@@ -30,89 +35,128 @@ from pathlib import Path
 import cv2
 import numpy as np
 from ultralytics import YOLO
+from sahi import AutoDetectionModel
+from sahi.predict import get_sliced_prediction
 
 # ─── PATHS ─────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = BASE_DIR / "model"
-DATASET_DIR = BASE_DIR / "UAVDT-preview"
+DATASET_DIR = BASE_DIR / "Visdrone_test"
 RESULTS_DIR = BASE_DIR / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
+
+# ─── PER-MODEL NATIVE RESOLUTION ──────────────────────────────────────
+MODEL_NATIVE_IMGSZ = {
+    "yolo26m":    960,
+    "yolo26m-p2": 768,
+}
+
+# ─── SAHI DEFAULTS ─────────────────────────────────────────────────────
+SAHI_SLICE_H = 512
+SAHI_SLICE_W = 512
+SAHI_OVERLAP_H = 0.2
+SAHI_OVERLAP_W = 0.2
 
 # ─── CLASS MAPPING ─────────────────────────────────────────────────────
 # UAVDT ground-truth classes from meta.json
 UAVDT_CLASSES = ["bus", "car", "truck", "vehicle"]
 
-# VisDrone classes (what the YOLO models were trained on)
-VISDRONE_CLASSES = [
-    "pedestrian",   # 0
-    "people",       # 1
-    "bicycle",      # 2
-    "car",          # 3
-    "van",          # 4
-    "truck",        # 5
-    "tricycle",     # 6
-    "awning-tricycle",  # 7
-    "bus",          # 8
-    "motor",        # 9
-]
-
-# Map VisDrone class indices → unified evaluation class name
-# We merge car+van → car, and treat "vehicle" labels as a generic match
-VISDRONE_TO_EVAL = {
-    3: "car",       # car
-    4: "car",       # van → car
-    5: "truck",     # truck
-    8: "bus",       # bus
+# Name-based mapping from model class names → unified evaluation class name.
+# Works for both old 10-class VisDrone and new 5-class reduced dataset.
+# We merge car+van → car, and treat "vehicle" labels as a generic match.
+NAME_TO_EVAL = {
+    "car":   "car",
+    "van":   "car",   # van → car
+    "truck": "truck",
+    "bus":   "bus",
 }
 
 # For the "vehicle" GT class (found in test split), any of these pred classes match
 VEHICLE_PRED_CLASSES = {"car", "truck", "bus"}
 
 
-# ─── ANNOTATION PARSING ───────────────────────────────────────────────
+def build_cls_id_to_eval(model_names: dict) -> dict:
+    """Build a mapping from model class index → eval class name at runtime."""
+    mapping = {}
+    for cls_id, cls_name in model_names.items():
+        name_lower = cls_name.lower()
+        if name_lower in NAME_TO_EVAL:
+            mapping[cls_id] = NAME_TO_EVAL[name_lower]
+    return mapping
 
-def parse_supervisely_json(json_path: Path) -> list[dict]:
+
+def parse_yolo_txt(txt_path: Path, img_w: int, img_h: int) -> list[dict]:
     """
-    Parse a Supervisely JSON annotation file.
+    Parse a YOLO .txt annotation file.
     Returns list of dicts: {class_name, bbox: [x1,y1,x2,y2]}
     """
-    with open(json_path, "r") as f:
-        data = json.load(f)
-
+    # The Visdrone_test YOLO labels are produced for the 5-class reduced dataset
+    VISDRONE_CLASSES_LIST = [
+        "pedestrian", "car", "truck", "bus", "motor"
+    ]
+    
     annotations = []
-    for obj in data.get("objects", []):
-        cls = obj.get("classTitle", "").lower()
-        if cls not in UAVDT_CLASSES:
-            continue
-        pts = obj["points"]["exterior"]
-        x1, y1 = pts[0]
-        x2, y2 = pts[1]
-        annotations.append({
-            "class_name": cls,
-            "bbox": [float(x1), float(y1), float(x2), float(y2)],
-        })
+    if not txt_path.exists():
+        return annotations
+        
+    with open(txt_path, "r") as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) >= 5:
+                cls_id = int(parts[0])
+                if cls_id >= len(VISDRONE_CLASSES_LIST):
+                    continue
+                cls_name = VISDRONE_CLASSES_LIST[cls_id]
+                
+                eval_cls = cls_name
+                
+                if eval_cls not in ["car", "truck", "bus"]:
+                    continue
+                
+                x_center = float(parts[1]) * img_w
+                y_center = float(parts[2]) * img_h
+                box_w = float(parts[3]) * img_w
+                box_h = float(parts[4]) * img_h
+                
+                x1 = x_center - box_w / 2
+                y1 = y_center - box_h / 2
+                x2 = x_center + box_w / 2
+                y2 = y_center + box_h / 2
+                
+                annotations.append({
+                    "class_name": eval_cls,
+                    "bbox": [x1, y1, x2, y2],
+                })
     return annotations
 
 
 def collect_dataset() -> list[dict]:
     """
-    Collect all images from train/ and test/ splits with their ground truth.
+    Collect all images with their ground truth.
     Returns list of {img_path, ann_path, split, gt_boxes: [...]}
     """
     dataset = []
-    for split in ["train", "test"]:
-        img_dir = DATASET_DIR / split / "img"
-        ann_dir = DATASET_DIR / split / "ann"
+    for split in ["test"]:
+        img_dir = DATASET_DIR / "images" / split
+        ann_dir = DATASET_DIR / "labels" / split
         if not img_dir.exists():
             print(f"  ⚠ Split '{split}' not found, skipping...")
             continue
 
         img_files = sorted(img_dir.glob("*.jpg"))
         for img_path in img_files:
-            ann_path = ann_dir / f"{img_path.name}.json"
+            ann_path = ann_dir / f"{img_path.stem}.txt"
+            
             gt_boxes = []
             if ann_path.exists():
-                gt_boxes = parse_supervisely_json(ann_path)
+                img = cv2.imread(str(img_path))
+                if img is None:
+                    continue
+                h, w = img.shape[:2]
+                gt_boxes = parse_yolo_txt(ann_path, w, h)
+
+            if len(gt_boxes) == 0:
+                continue
 
             dataset.append({
                 "img_path": str(img_path),
@@ -271,56 +315,56 @@ def compute_counting_metrics(per_image_gt_counts, per_image_det_counts):
 
 # ─── MAIN EVALUATION ──────────────────────────────────────────────────
 
-def map_prediction_class(yolo_cls_id: int, model) -> str | None:
+def map_prediction_class(yolo_cls_id: int, cls_id_to_eval: dict) -> str | None:
     """Map a YOLO prediction class ID to our eval class name."""
-    cls_name = model.names.get(yolo_cls_id, "")
-    
-    # Direct VisDrone mapping
-    if yolo_cls_id in VISDRONE_TO_EVAL:
-        return VISDRONE_TO_EVAL[yolo_cls_id]
-    
-    # Fallback: try matching by name
-    name_lower = cls_name.lower()
-    if name_lower in ["car", "van"]:
-        return "car"
-    elif name_lower == "truck":
-        return "truck"
-    elif name_lower == "bus":
-        return "bus"
-    
-    return None  # Not a vehicle class we care about
+    return cls_id_to_eval.get(yolo_cls_id)
+
+
+def _map_sahi_class(pred_obj, cls_id_to_eval: dict) -> str | None:
+    """Map a SAHI prediction object to our eval class name."""
+    cls_id = pred_obj.category.id
+    return cls_id_to_eval.get(cls_id)
 
 
 def run_evaluation(model_name: str, model_path: str, dataset: list[dict],
                    conf: float, iou_thresh: float, imgsz: int) -> dict:
-    """Run full evaluation for one model."""
+    """Run full evaluation for one model using SAHI tiled inference."""
     print(f"\n{'='*70}")
-    print(f"  Evaluating: {model_name}")
+    print(f"  Evaluating: {model_name}  (SAHI)")
     print(f"  Model:      {model_path}")
     print(f"  Images:     {len(dataset)}")
     print(f"  Conf:       {conf}  |  IoU:  {iou_thresh}  |  ImgSz: {imgsz}")
+    print(f"  SAHI slice: {SAHI_SLICE_H}×{SAHI_SLICE_W}  "
+          f"overlap: {SAHI_OVERLAP_H}/{SAHI_OVERLAP_W}")
     print(f"{'='*70}")
 
-    model = YOLO(model_path)
-    
-    # Print model class names for reference
-    print(f"  Model classes: {model.names}")
+    # Load YOLO model (for class names reference)
+    yolo_model = YOLO(model_path)
+    model_names = yolo_model.names
+    cls_id_to_eval = build_cls_id_to_eval(model_names)
+    print(f"  Model classes: {model_names}")
+    print(f"  Eval mapping:  {cls_id_to_eval}")
+
+    # Build SAHI detection model
+    sahi_model = AutoDetectionModel.from_pretrained(
+        model_type="ultralytics",
+        model_path=model_path,
+        confidence_threshold=conf,
+        device="mps",  # Apple Silicon GPU
+        image_size=imgsz,
+    )
 
     # Storage for per-class evaluations
-    # Classes to evaluate: bus, car, truck, vehicle (vehicle = any vehicle)
     eval_classes = ["bus", "car", "truck"]
-    gt_by_class = {c: [] for c in eval_classes}        # (img_idx, bbox)
-    det_by_class = {c: [] for c in eval_classes}       # (img_idx, conf, bbox)
+    gt_by_class = {c: [] for c in eval_classes}
+    det_by_class = {c: [] for c in eval_classes}
 
-    # For "vehicle" GT labels → match against any vehicle prediction
-    gt_vehicle = []     # (img_idx, bbox)
-    det_vehicle = []    # (img_idx, conf, bbox) — all vehicle-type preds
+    gt_vehicle = []
+    det_vehicle = []
 
-    # Counting metrics
     per_image_gt_counts = []
     per_image_det_counts = []
 
-    # Per-split metrics
     split_stats = {"train": {"n": 0, "gt": 0, "det": 0},
                    "test": {"n": 0, "gt": 0, "det": 0}}
 
@@ -332,36 +376,35 @@ def run_evaluation(model_name: str, model_path: str, dataset: list[dict],
         gt_boxes = sample["gt_boxes"]
         split = sample["split"]
 
-        # ── Run inference ──
+        # ── Run SAHI sliced inference ──
         t0 = time.time()
-        results = model.predict(
+        sahi_result = get_sliced_prediction(
             img_path,
-            conf=conf,
-            iou=iou_thresh,
-            imgsz=imgsz,
-            verbose=False,
-            device="mps",  # Use Apple Silicon GPU
+            sahi_model,
+            slice_height=imgsz,
+            slice_width=imgsz,
+            overlap_height_ratio=SAHI_OVERLAP_H,
+            overlap_width_ratio=SAHI_OVERLAP_W,
+            postprocess_type="NMS",
+            postprocess_match_metric="IOU",
+            postprocess_match_threshold=iou_thresh,
+            verbose=0,
         )
         t1 = time.time()
         total_inference_time += (t1 - t0)
         n_processed += 1
 
-        # ── Parse predictions ──
+        # ── Parse SAHI predictions ──
         preds = []
-        if results and len(results) > 0:
-            result = results[0]
-            if result.boxes is not None:
-                for box in result.boxes:
-                    cls_id = int(box.cls[0])
-                    confidence = float(box.conf[0])
-                    xyxy = box.xyxy[0].cpu().numpy().tolist()
-                    eval_cls = map_prediction_class(cls_id, model)
-                    if eval_cls:
-                        preds.append({
-                            "class_name": eval_cls,
-                            "confidence": confidence,
-                            "bbox": xyxy,
-                        })
+        for pred_obj in sahi_result.object_prediction_list:
+            eval_cls = _map_sahi_class(pred_obj, cls_id_to_eval)
+            if eval_cls:
+                bbox = pred_obj.bbox
+                preds.append({
+                    "class_name": eval_cls,
+                    "confidence": pred_obj.score.value,
+                    "bbox": [bbox.minx, bbox.miny, bbox.maxx, bbox.maxy],
+                })
 
         # ── Assign GT and predictions to class buckets ──
         n_gt_this = len(gt_boxes)
@@ -373,7 +416,6 @@ def run_evaluation(model_name: str, model_path: str, dataset: list[dict],
                 gt_vehicle.append((img_idx, gt["bbox"]))
             elif gt_cls in eval_classes:
                 gt_by_class[gt_cls].append((img_idx, gt["bbox"]))
-                # Also add to the "all vehicles" bucket
                 gt_vehicle.append((img_idx, gt["bbox"]))
 
         for pred in preds:
@@ -381,7 +423,6 @@ def run_evaluation(model_name: str, model_path: str, dataset: list[dict],
             if pred_cls in eval_classes:
                 det_by_class[pred_cls].append(
                     (img_idx, pred["confidence"], pred["bbox"]))
-            # All vehicle predictions go to the vehicle bucket
             det_vehicle.append((img_idx, pred["confidence"], pred["bbox"]))
 
         per_image_gt_counts.append(n_gt_this)
@@ -500,6 +541,8 @@ def run_evaluation(model_name: str, model_path: str, dataset: list[dict],
     print(f"  │  Counting MAE:  {counting['MAE']:<8.2f}                 │")
     print(f"  │  Counting RMSE: {counting['RMSE']:<8.2f}                 │")
     print(f"  │  Counting R²:   {counting['R2']:<8.4f}                 │")
+    print(f"  │  SAHI:          Yes                          │")
+    print(f"  │  Slice:         {SAHI_SLICE_H}×{SAHI_SLICE_W}                      │")
     print(f"  └──────────────────────────────────────────────┘")
 
     return result
@@ -508,9 +551,11 @@ def run_evaluation(model_name: str, model_path: str, dataset: list[dict],
 def generate_comparison_table(all_results: list[dict]) -> str:
     """Generate a markdown comparison table."""
     lines = []
-    lines.append("# YOLO Model Comparison on UAVDT-Preview")
+    lines.append("# YOLO Model Comparison on UAVDT-Preview (SAHI)")
     lines.append(f"\nDate: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"Dataset: UAVDT-Preview (train + test splits combined)")
+    lines.append(f"Inference: SAHI sliced ({SAHI_SLICE_H}×{SAHI_SLICE_W}, "
+                 f"overlap {SAHI_OVERLAP_H}/{SAHI_OVERLAP_W})")
     lines.append("")
 
     # ── Summary table ──
@@ -608,18 +653,16 @@ def generate_comparison_table(all_results: list[dict]) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Evaluate YOLO models on UAVDT-Preview dataset")
-    parser.add_argument("--conf", type=float, default=0.25,
-                        help="Confidence threshold (default: 0.25)")
+        description="Evaluate YOLO models on UAVDT-Preview dataset (SAHI)")
+    parser.add_argument("--conf", type=float, default=0.5,
+                        help="Confidence threshold (default: 0.5)")
     parser.add_argument("--iou", type=float, default=0.5,
                         help="NMS IoU threshold (default: 0.5)")
-    parser.add_argument("--imgsz", type=int, default=960,
-                        help="Inference image size (default: 960)")
     args = parser.parse_args()
 
-    print("╔══════════════════════════════════════════════════════╗")
-    print("║   YOLO Model Evaluation on UAVDT-Preview Dataset    ║")
-    print("╚══════════════════════════════════════════════════════╝")
+    print("╔══════════════════════════════════════════════════════════════╗")
+    print("║   YOLO Model Evaluation on Visdrone_test Dataset  (SAHI)   ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
 
     # ── Discover models ──
     models = []
@@ -628,9 +671,11 @@ def main():
             if model_dir.is_dir():
                 best_pt = model_dir / "best.pt"
                 if best_pt.exists():
+                    native_imgsz = MODEL_NATIVE_IMGSZ.get(model_dir.name, 960)
                     models.append({
                         "name": model_dir.name,
                         "path": str(best_pt),
+                        "imgsz": native_imgsz,
                     })
 
     if not models:
@@ -639,7 +684,7 @@ def main():
 
     print(f"\n  Found {len(models)} model(s):")
     for m in models:
-        print(f"    • {m['name']}: {m['path']}")
+        print(f"    • {m['name']}: {m['path']}  (imgsz={m['imgsz']})")
 
     # ── Collect dataset ──
     print(f"\n  Collecting dataset from {DATASET_DIR}...")
@@ -668,7 +713,7 @@ def main():
             dataset=dataset,
             conf=args.conf,
             iou_thresh=args.iou,
-            imgsz=args.imgsz,
+            imgsz=m["imgsz"],    # per-model native resolution
         )
         all_results.append(result)
 
@@ -677,33 +722,33 @@ def main():
 
     # Individual model results
     for result in all_results:
-        out_path = RESULTS_DIR / f"{result['model']}_{timestamp}.json"
+        out_path = RESULTS_DIR / f"{result['model']}_sahi_{timestamp}.json"
         with open(out_path, "w") as f:
             json.dump(result, f, indent=2)
         print(f"\n  Saved: {out_path}")
 
     # Comparison JSON
-    comparison_path = RESULTS_DIR / f"comparison_{timestamp}.json"
+    comparison_path = RESULTS_DIR / f"comparison_sahi_{timestamp}.json"
     with open(comparison_path, "w") as f:
         json.dump(all_results, f, indent=2)
     print(f"  Saved: {comparison_path}")
 
     # Markdown report
     report = generate_comparison_table(all_results)
-    report_path = RESULTS_DIR / f"report_{timestamp}.md"
+    report_path = RESULTS_DIR / f"report_sahi_{timestamp}.md"
     with open(report_path, "w") as f:
         f.write(report)
     print(f"  Saved: {report_path}")
 
     # ── Final comparison ──
     print(f"\n{'='*70}")
-    print(f"  FINAL COMPARISON")
+    print(f"  FINAL COMPARISON  (SAHI)")
     print(f"{'='*70}")
-    print(f"\n  {'Model':<16s} {'mAP@50':>8s} {'mAP@50:95':>10s} "
+    print(f"\n  {'Model':<16s} {'ImgSz':>5s} {'mAP@50':>8s} {'mAP@50:95':>10s} "
           f"{'FPS':>6s} {'P':>6s} {'R':>6s} {'MAE':>6s}")
-    print(f"  {'-'*16} {'-'*8} {'-'*10} {'-'*6} {'-'*6} {'-'*6} {'-'*6}")
+    print(f"  {'-'*16} {'-'*5} {'-'*8} {'-'*10} {'-'*6} {'-'*6} {'-'*6} {'-'*6}")
     for r in all_results:
-        print(f"  {r['model']:<16s} {r['mAP50']:>8.4f} {r['mAP50_95']:>10.4f} "
+        print(f"  {r['model']:<16s} {r['imgsz']:>5d} {r['mAP50']:>8.4f} {r['mAP50_95']:>10.4f} "
               f"{r['fps']:>6.1f} "
               f"{r['all_vehicles']['precision_50']:>6.4f} "
               f"{r['all_vehicles']['recall_50']:>6.4f} "
