@@ -12,7 +12,7 @@ from sahi import AutoDetectionModel
 from sahi.predict import get_sliced_prediction
 
 
-def get_sahi_model(model_path, conf=0.5, device="cpu"):
+def get_sahi_model(model_path, conf=0.5, device="mps"):
     """Tạo SAHI AutoDetectionModel từ đường dẫn model YOLO.
     
     Args:
